@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "WMSState": {
+      "title": "WMS State",
+      "description": "Unified Warehouse Management System shared state across all devices",
+      "type": "object",
+      "properties": {
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        },
+        "lastOperator": {
+          "type": "string",
+          "description": "Name of operator who performed last action"
+        },
+        "data": {
+          "type": "string",
+          "description": "JSON stringified state payload or snapshot"
+        }
+      },
+      "required": ["updatedAt"]
+    },
+    "Requisition": {
+      "title": "Requisition Document",
+      "description": "Requisition order for warehouse item issuance",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "requestor": { "type": "string" },
+        "department": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "requestor", "status"]
+    }
+  },
+  "firestore": {
+    "/wms_cloud/live_state": {
+      "schema": "WMSState",
+      "description": "Global synchronized state for all WMS users and devices"
+    },
+    "/wms_cloud/live_state/requisitions/{reqId}": {
+      "schema": "Requisition",
+      "description": "Active requisitions list"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Remix Remix Remix Warehouse Management System (WMS)",
+  "description": "ระบบจำลองบริหารจัดการคลังสินค้า (WMS) ควบคุมสต็อกแบบ Real-time, Barcode Scanner, ใบเบิกสินค้า, ระบบจัดเส้นทาง Picking, Packing, Shipping, Location Management และ KPI Dashboard",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
