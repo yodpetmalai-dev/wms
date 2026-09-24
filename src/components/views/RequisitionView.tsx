@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useWMS } from '../../context/WMSContext';
 import { Requisition, RequisitionStatus } from '../../types/wms';
 import {
@@ -21,7 +21,9 @@ import {
   ShoppingBag,
   Sparkles,
   Check,
+  Camera,
 } from 'lucide-react';
+import { BarcodeScannerModal } from '../BarcodeScannerModal';
 
 interface RequisitionViewProps {
   onNavigateToPicking?: (pickId: string) => void;
@@ -87,7 +89,7 @@ export const RequisitionView: React.FC<RequisitionViewProps> = ({
   autoOpenCreate,
   onCloseAutoCreate,
 }) => {
-  const { requisitions, products, users, createRequisition, approveRequisition, activeUser, clearOrdersAndPickingHistory } =
+  const { requisitions, products, users, lookupBarcode, createRequisition, approveRequisition, activeUser, clearOrdersAndPickingHistory } =
     useWMS();
 
   const [searchQuery, setSearchQuery] = useState(initialReqId || '');
@@ -114,6 +116,90 @@ export const RequisitionView: React.FC<RequisitionViewProps> = ({
     { sku: products[0]?.sku || 'PEN-BL-001', quantity: 10 },
     { sku: products[1]?.sku || 'PEN-RD-002', quantity: 5 },
   ]);
+  const [scanInput, setScanInput] = useState('');
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanFeedback, setScanFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const addItemByBarcode = useCallback(
+    (code: string) => {
+      const clean = (code || '').trim();
+      if (!clean) return;
+      const lookup = lookupBarcode(clean);
+      const product = lookup.product || products.find((p) => p.sku.toUpperCase() === clean.toUpperCase());
+      if (!product) {
+        setScanFeedback({
+          text: `✕ ไม่พบสินค้าจากบาร์โค้ด "${clean}" ในฐานข้อมูล`,
+          type: 'error',
+        });
+        setScanInput('');
+        return;
+      }
+      const isDuplicate = itemsList.some((it) => it.sku.toUpperCase() === product.sku.toUpperCase());
+      if (isDuplicate) {
+        setScanFeedback({
+          text: `⚠ ${product.name} (${product.sku}) มีในรายการแล้ว`,
+          type: 'error',
+        });
+        setScanInput('');
+        return;
+      }
+      setItemsList((prev) => [...prev, { sku: product.sku, quantity: 1 }]);
+      setScanFeedback({
+        text: `✓ เพิ่ม ${product.name} (${product.sku}) ลงรายการเรียบร้อย`,
+        type: 'success',
+      });
+      setScanInput('');
+    },
+    [lookupBarcode, products, itemsList]
+  );
+
+  // Hardware USB barcode scanner (HID) support while the create modal is open
+  useEffect(() => {
+    if (!createModalOpen) return;
+    let buffer = '';
+    let lastKeyTime = 0;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushBuffer = () => {
+      if (buffer.length >= 2) {
+        addItemByBarcode(buffer);
+      }
+      buffer = '';
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastKeyTime > 300 && buffer) {
+        buffer = '';
+      }
+      lastKeyTime = now;
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        flushBuffer();
+        return;
+      }
+      if (e.key === 'Escape') {
+        buffer = '';
+        return;
+      }
+      if (e.key.length === 1) {
+        buffer += e.key;
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushBuffer, 150);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      if (flushTimer) clearTimeout(flushTimer);
+    };
+  }, [createModalOpen, addItemByBarcode]);
 
   // Listen to autoOpenCreate prop
   useEffect(() => {
@@ -122,6 +208,15 @@ export const RequisitionView: React.FC<RequisitionViewProps> = ({
       if (onCloseAutoCreate) onCloseAutoCreate();
     }
   }, [autoOpenCreate, onCloseAutoCreate]);
+
+  // Reset scan state when create modal closes
+  useEffect(() => {
+    if (!createModalOpen) {
+      setScanInput('');
+      setScanFeedback(null);
+      setCameraOpen(false);
+    }
+  }, [createModalOpen]);
 
   // Sync with active user if changed
   useEffect(() => {
@@ -783,6 +878,74 @@ export const RequisitionView: React.FC<RequisitionViewProps> = ({
                   />
                 </div>
               </div>
+
+              {/* Barcode Scan to Add Items */}
+              <div className="bg-slate-900 text-white rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1.5">
+                    <Barcode className="w-4 h-4 text-emerald-400" />
+                    สแกนบาร์โค้ดเพื่อเพิ่มรายการ
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCameraOpen(true);
+                      setScanFeedback(null);
+                    }}
+                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+                  >
+                    <Camera className="w-3.5 h-3.5" /> เปิดกล้องสแกน
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Barcode className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={scanInput}
+                      onChange={(e) => setScanInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          addItemByBarcode(scanInput);
+                        }
+                      }}
+                      placeholder="ยิงบาร์โค้ด/พิมพ์ SKU แล้วกด Enter (รองรับทั้งกล้องและเครื่องสแกน USB)"
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-800 border border-slate-700 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/30 rounded-lg text-white placeholder:text-slate-500 focus:outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => addItemByBarcode(scanInput)}
+                    className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 rounded-lg text-xs font-black flex items-center gap-1 cursor-pointer transition-all shadow-sm"
+                  >
+                    <Check className="w-3.5 h-3.5" /> เพิ่ม
+                  </button>
+                </div>
+                {scanFeedback && (
+                  <div
+                    className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg ${
+                      scanFeedback.type === 'success'
+                        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
+                        : 'bg-rose-500/15 text-rose-300 border border-rose-500/40'
+                    }`}
+                  >
+                    {scanFeedback.text}
+                  </div>
+                )}
+              </div>
+
+              {cameraOpen && (
+                <BarcodeScannerModal
+                  isOpen={cameraOpen}
+                  onClose={() => setCameraOpen(false)}
+                  title="สแกนบาร์โค้ดเพิ่มรายการสินค้า"
+                  onScanSuccess={(sku) => {
+                    addItemByBarcode(sku);
+                    setCameraOpen(false);
+                  }}
+                />
+              )}
 
               {/* Items List */}
               <div className="space-y-2 pt-1">
