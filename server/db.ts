@@ -437,7 +437,11 @@ class ProductionWMSDatabase {
       }
     }
 
-    const nextNum = this.state.requisitions.length + 1;
+    const existingNumbers = this.state.requisitions
+      .map((r) => parseInt((r.id || '').replace(/\D/g, ''), 10) || 0);
+    const nextNum = existingNumbers.length > 0
+      ? Math.max(...existingNumbers) + 1
+      : 1;
     const reqId = `REQ-${String(nextNum).padStart(4, '0')}`;
     const pickId = `PICK-${String(nextNum).padStart(4, '0')}`;
 
@@ -895,6 +899,14 @@ class ProductionWMSDatabase {
   } {
     const req = this.getRequisitionById(reqId);
     if (!req) return { success: false, message: 'ไม่พบใบเบิกในระบบ' };
+
+    const unpicked = req.items.filter((i) => (i.pickedQuantity || 0) < (i.quantity || 0));
+    if (unpicked.length > 0) {
+      return {
+        success: false,
+        message: `ยังหยิบสินค้าไม่ครบ: ${unpicked.map((i) => `${i.productName} (${i.pickedQuantity || 0}/${i.quantity})`).join(', ')} — ให้หยิบครบก่อนจ่ายสินค้า`,
+      };
+    }
 
     req.status = 'จ่ายสินค้าแล้ว';
     req.items.forEach((it) => {

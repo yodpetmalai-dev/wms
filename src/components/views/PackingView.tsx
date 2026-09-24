@@ -139,6 +139,9 @@ export const PackingView: React.FC = () => {
     if (res.success) {
       confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
       setShippingLabelModalOpen(true);
+      setScanMessage({ text: '✓ ตัดจ่ายสินค้าสำเร็จ สถานะ Ready to Ship', type: 'success' });
+    } else {
+      setScanMessage({ text: res.message, type: 'error' });
     }
   };
 

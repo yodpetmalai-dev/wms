@@ -1401,7 +1401,6 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               status: 'In Progress',
               pickerName: pickerName || p.pickerName,
               startTime: p.startTime || nowTimeStr,
-              ...(p as any),
               startTimeMs: (p as any).startTimeMs || Date.now(),
             }
           : p
@@ -1517,13 +1516,14 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const currentPicked = item.pickedQuantity ?? (item.isPicked ? item.quantity : 0);
     const remainingNeeded = Math.max(0, item.quantity - currentPicked);
-    const amountToPick = data.pickedQty && data.pickedQty > 0
-      ? Math.min(data.pickedQty, remainingNeeded > 0 ? remainingNeeded : 1)
-      : (remainingNeeded > 0 ? remainingNeeded : 1);
 
-    if (amountToPick <= 0 && remainingNeeded <= 0) {
-      return { success: false, message: `✓ สินค้า ${item.productName} จัดหยิบครบตามจำนวนแล้ว` };
+    if (remainingNeeded <= 0) {
+      return { success: false, message: `✓ สินค้า ${item.productName} (${item.sku}) จัดหยิบครบตามจำนวนแล้ว` };
     }
+
+    const amountToPick = data.pickedQty && data.pickedQty > 0
+      ? Math.min(data.pickedQty, remainingNeeded)
+      : remainingNeeded;
 
     if (amountToPick > prod.currentStock) {
       playErrorBuzz();
@@ -1716,6 +1716,14 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const verifyAndIssueGoods = (reqId: string, operatorName = 'นาย K (Packing)') => {
     const req = requisitions.find((r) => r.id === reqId);
     if (!req) return { success: false, message: 'ไม่พบใบเบิก' };
+
+    const unpicked = req.items.filter((i) => (i.pickedQuantity || 0) < (i.quantity || 0));
+    if (unpicked.length > 0) {
+      return {
+        success: false,
+        message: `⚠ ยังหยิบสินค้าไม่ครบ: ${unpicked.map((i) => `${i.productName} (${i.pickedQuantity || 0}/${i.quantity})`).join(', ')} — ให้หยิบครบก่อนจ่ายสินค้า`,
+      };
+    }
 
     const shipId = `SHIP-${reqId.replace('REQ-', '')}`;
     const totalUnits = req.items.reduce((acc, i) => acc + i.quantity, 0);

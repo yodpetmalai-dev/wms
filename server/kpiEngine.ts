@@ -245,7 +245,11 @@ export function computeProductionKPIs(): ProductionKPIDashboardData {
   let totalCalculatedDistance = 0;
   let evaluatedOrders = 0;
 
-  const targetOrders = completedOrdersCount > 0 ? completedPickingOrders : pickingOrders;
+  // Only count orders that have actually been travelled/started (never pure Pending),
+  // so the KPI reflects real picking distance, not not-yet-started routes.
+  const targetOrders = completedOrdersCount > 0
+    ? completedPickingOrders
+    : pickingOrders.filter((p) => p.status !== 'Pending');
 
   targetOrders.forEach((order) => {
     const locCodes = Array.from(new Set(order.items.map((i) => i.location)));
