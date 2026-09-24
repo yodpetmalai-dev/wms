@@ -2,6 +2,8 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes';
+import { db } from './server/db';
+import { bootstrapFromCloud, writeFirestoreCloudSnapshot } from './server/firebaseCloud';
 
 async function startServer() {
   const app = express();
@@ -61,8 +63,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  app.listen(PORT, '0.0.0.0', async () => {
     console.log(`[WMS] Warehouse Management System running on http://0.0.0.0:${PORT}`);
+
+    // Restore shared data from the persistent cloud store (Firestore/replay),
+    // then push the (now complete) state back to the cloud so all devices stay linked.
+    try {
+      const restored = await bootstrapFromCloud();
+      console.log('[WMS] Cloud bootstrap done:', JSON.stringify(restored));
+      await writeFirestoreCloudSnapshot(db.getState()).catch(() => {});
+    } catch (err) {
+      console.warn('[WMS] Cloud bootstrap failed:', err);
+    }
   });
 }
 

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Product,
   WarehouseLocation,
@@ -222,6 +222,35 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [serverKpis, setServerKpis] = useState<ProductionKPIData | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => new Date().toLocaleTimeString('th-TH'));
 
+  // Live reference to the most recent state so memoized sync callbacks can read it
+  const snapshotRef = useRef<{
+    products: Product[];
+    barcodes: ProductBarcode[];
+    requisitions: Requisition[];
+    pickingOrders: PickingOrder[];
+    shipments: Shipment[];
+    transactions: StockTransaction[];
+    employeeKPIs: EmployeeKPI[];
+  }>({
+    products: [],
+    barcodes: [],
+    requisitions: [],
+    pickingOrders: [],
+    shipments: [],
+    transactions: [],
+    employeeKPIs: [],
+  });
+  snapshotRef.current = {
+    products,
+    barcodes,
+    requisitions,
+    pickingOrders,
+    shipments,
+    transactions,
+    employeeKPIs,
+  };
+  const lastSyncPushRef = useRef<number>(0);
+
   // Sync to local storage for offline tolerance
   useEffect(() => {
     try {
@@ -339,13 +368,66 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setConnectedDevicesCount(Math.max(1, json.activeDevicesCount));
           }
           if (Array.isArray(json.data.products) && json.data.products.length > 0) {
-            setProducts((prev) => {
-              const serverMap = new Map<string, number>();
-              json.data.products.forEach((p: Product) => serverMap.set(p.sku, p.currentStock));
-              return prev.map((p) => (serverMap.has(p.sku) ? { ...p, currentStock: serverMap.get(p.sku)! } : p));
+            const seedStockMap = new Map<string, number>(
+              INITIAL_PRODUCTS.map((p) => [p.sku, p.currentStock])
+            );
+            const local = snapshotRef.current;
+
+            // Detect whether the server is back to fresh / seed data (e.g. after
+            // a Render restart) while THIS device still holds real operational data.
+            let looksSeeded = true;
+            json.data.products.forEach((sp: Product) => {
+              if (sp.currentStock !== seedStockMap.get(sp.sku)) looksSeeded = false;
+            });
+
+            const localHasData =
+              (Array.isArray(local.requisitions) && local.requisitions.length > 0) ||
+              (Array.isArray(local.pickingOrders) && local.pickingOrders.length > 0) ||
+              (Array.isArray(local.transactions) && local.transactions.length > 0) ||
+              (Array.isArray(local.products) &&
+                local.products.some((p) => p.currentStock !== seedStockMap.get(p.sku)));
+
+            if (looksSeeded && localHasData) {
+              // Re-seed the server from this device's richer state (throttled).
+              const now = Date.now();
+              if (now - lastSyncPushRef.current > 15000) {
+                lastSyncPushRef.current = now;
+                fetch('/api/v1/sync/push', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    snapshot: {
+                      lastUpdatedMs: Date.now(),
+                      requisitions: local.requisitions,
+                      pickingOrders: local.pickingOrders,
+                      shipments: local.shipments,
+                      employeeKPIs: local.employeeKPIs,
+                      products: local.products.map((p: Product) => ({
+                        sku: p.sku,
+                        currentStock: p.currentStock,
+                      })),
+                    },
+                  }),
+                }).catch(() => {});
+              }
+            } else {
+              setProducts((prev) => {
+                const serverMap = new Map<string, number>();
+                json.data.products.forEach((p: Product) => serverMap.set(p.sku, p.currentStock));
+                return prev.map((p) => (serverMap.has(p.sku) ? { ...p, currentStock: serverMap.get(p.sku)! } : p));
+              });
+            }
+          }
+          if (Array.isArray(json.data.barcodes) && json.data.barcodes.length > 0) {
+            setBarcodes((prev) => {
+              const map = new Map<string, ProductBarcode>();
+              (Array.isArray(prev) ? prev : []).forEach((b) => map.set(b.id || b.barcodeValue, b));
+              json.data.barcodes.forEach((b: ProductBarcode) => {
+                if (b && b.barcodeValue) map.set(b.id || b.barcodeValue, b);
+              });
+              return Array.from(map.values());
             });
           }
-          if (Array.isArray(json.data.barcodes)) setBarcodes(json.data.barcodes);
           if (Array.isArray(json.data.requisitions)) {
             setRequisitions((prev) => mergeRequisitionsHelper(json.data.requisitions, prev));
           }
@@ -594,10 +676,39 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       es.addEventListener('state_update', (evt: MessageEvent) => {
         try {
           const payload = JSON.parse(evt.data);
-          if (payload.products) setProducts(payload.products);
-          if (payload.barcodes) setBarcodes(payload.barcodes);
-          if (payload.requisitions) setRequisitions(payload.requisitions);
-          if (payload.pickingOrders) setPickingOrders(payload.pickingOrders);
+          if (Array.isArray(payload.products) && payload.products.length > 0) {
+            const seedStockMap = new Map<string, number>(
+              INITIAL_PRODUCTS.map((p) => [p.sku, p.currentStock])
+            );
+            let looksSeeded = true;
+            payload.products.forEach((sp: Product) => {
+              if (sp.currentStock !== seedStockMap.get(sp.sku)) looksSeeded = false;
+            });
+            const local = snapshotRef.current;
+            const localHasData =
+              (Array.isArray(local.requisitions) && local.requisitions.length > 0) ||
+              (Array.isArray(local.pickingOrders) && local.pickingOrders.length > 0) ||
+              (Array.isArray(local.transactions) && local.transactions.length > 0);
+            if (!(looksSeeded && localHasData)) {
+              setProducts(payload.products);
+            }
+          }
+          if (Array.isArray(payload.barcodes)) {
+            setBarcodes((prev) => {
+              const map = new Map<string, ProductBarcode>();
+              (Array.isArray(prev) ? prev : []).forEach((b) => map.set(b.id || b.barcodeValue, b));
+              payload.barcodes.forEach((b: ProductBarcode) => {
+                if (b && b.barcodeValue) map.set(b.id || b.barcodeValue, b);
+              });
+              return Array.from(map.values());
+            });
+          }
+          if (Array.isArray(payload.requisitions)) {
+            setRequisitions((prev) => mergeRequisitionsHelper(payload.requisitions, prev));
+          }
+          if (Array.isArray(payload.pickingOrders)) {
+            setPickingOrders((prev) => mergePickingOrdersHelper(payload.pickingOrders, prev));
+          }
           if (payload.shipments) setShipments(payload.shipments);
           if (payload.transactions) setTransactions(payload.transactions);
           if (payload.employeeKPIs) setEmployeeKPIs(payload.employeeKPIs);
@@ -735,6 +846,27 @@ export const WMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           stockQty: directProd.currentStock,
           unit: directProd.unit,
           product: directProd,
+        };
+      }
+
+      // Step 2.5: Robust variant matching for PRINTED / generated labels.
+      // Scanners read back what was actually printed (e.g. 13-digit EAN-13 with
+      // check digit from a 12-digit stored barcode, Thai/EN keyboard variants,
+      // hyphen-less codes), so compare using the same smart matcher as picking.
+      const robustProd = products.find(
+        (p) => p && isBarcodeOrSkuMatch(clean, { sku: p.sku, barcode: p.barcode, name: p.name }, barcodes)
+      );
+      if (robustProd) {
+        const detectedFmt = formatHint || robustProd.barcodeType || detectBarcodeFormatFromValue(clean);
+        return {
+          barcodeValue: clean,
+          barcodeFormat: detectedFmt,
+          sku: robustProd.sku,
+          productName: robustProd.name,
+          location: robustProd.location,
+          stockQty: robustProd.currentStock,
+          unit: robustProd.unit,
+          product: robustProd,
         };
       }
 

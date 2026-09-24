@@ -198,6 +198,84 @@ class ProductionWMSDatabase {
     return this.state;
   }
 
+  /**
+   * Merge a cloud snapshot into this database (idempotent).
+   * Only ADDS requisitions / picking orders / shipments / stock that are missing,
+   * so it is safe to run at startup and from any device push without clobbering live data.
+   */
+  public mergeCloudSnapshot(snapshot: any): {
+    restored: boolean;
+    counts: { requisitions?: number; pickingOrders?: number; shipments?: number; stock?: number };
+  } {
+    const counts = { requisitions: 0, pickingOrders: 0, shipments: 0, stock: 0 };
+    if (!snapshot || typeof snapshot !== 'object') {
+      return { restored: false, counts };
+    }
+
+    const snapReq = Array.isArray(snapshot.requisitions) ? snapshot.requisitions : [];
+    const snapPick = Array.isArray(snapshot.pickingOrders) ? snapshot.pickingOrders : [];
+    const snapShip = Array.isArray(snapshot.shipments) ? snapshot.shipments : [];
+    const snapStock = Array.isArray(snapshot.products) ? snapshot.products : [];
+
+    const reqIds = new Set(this.state.requisitions.map((r) => r.id));
+    snapReq.forEach((r: any) => {
+      if (r && r.id && !reqIds.has(r.id)) {
+        this.state.requisitions.push({
+          ...r,
+          items: Array.isArray(r.items) ? r.items : [],
+          requestor: r.requestor || 'เจ้าหน้าที่',
+          department: r.department || 'ฝ่ายปฏิบัติการ',
+          date: r.date || new Date().toISOString().split('T')[0],
+          status: r.status || 'รอหยิบ',
+        } as Requisition);
+        counts.requisitions++;
+      }
+    });
+
+    const pickIds = new Set(this.state.pickingOrders.map((p) => p.id));
+    snapPick.forEach((p: any) => {
+      if (p && p.id && !pickIds.has(p.id)) {
+        this.state.pickingOrders.push({
+          ...p,
+          items: Array.isArray(p.items) ? p.items : [],
+        } as PickingOrder);
+        counts.pickingOrders++;
+      }
+    });
+
+    const shipIds = new Set(this.state.shipments.map((s) => s.id));
+    snapShip.forEach((s: any) => {
+      if (s && s.id && !shipIds.has(s.id)) {
+        this.state.shipments.push({ ...s } as Shipment);
+        counts.shipments++;
+      }
+    });
+
+    const cloudNewer = (snapshot.lastUpdatedMs || 0) > (this.state.lastUpdatedMs || 0);
+    snapStock.forEach((sp: any) => {
+      if (!sp || !sp.sku || typeof sp.currentStock !== 'number') return;
+      const prod = this.state.products.find((p) => p.sku === sp.sku);
+      if (!prod) return;
+      const untouched = prod.currentStock === prod.initialStock;
+      if (cloudNewer || untouched) {
+        prod.currentStock = Math.max(0, sp.currentStock);
+        counts.stock++;
+      }
+    });
+
+    if (counts.requisitions || counts.pickingOrders || counts.shipments || counts.stock) {
+      const cloudTs = snapshot.lastUpdatedMs || 0;
+      if (cloudTs > this.state.lastUpdatedMs) {
+        this.state.lastUpdatedMs = cloudTs;
+      }
+      this.state.lastUpdatedMs = Math.max(this.state.lastUpdatedMs, Date.now());
+      this.state.version = (this.state.version || 0) + 1;
+      this.saveToFile();
+      return { restored: true, counts };
+    }
+    return { restored: false, counts };
+  }
+
   public getProducts(): Product[] {
     return this.state.products;
   }
@@ -226,8 +304,14 @@ class ProductionWMSDatabase {
       );
       if (prod) return prod;
     }
-    return this.state.products.find(
+    const direct = this.state.products.find(
       (p) => p.sku.toUpperCase() === clean || (p.barcode && p.barcode.toUpperCase() === clean)
+    );
+    if (direct) return direct;
+
+    // Robust variant matching so printed EAN-13 / UPC / normalized labels resolve correctly
+    return this.state.products.find((p) =>
+      isBarcodeOrSkuMatch(clean, { sku: p.sku, barcode: p.barcode, name: p.name }, this.state.barcodes)
     );
   }
 

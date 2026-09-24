@@ -4,6 +4,7 @@ import path from 'path';
 import { ZipArchive } from 'archiver';
 import { db } from './db';
 import { computeProductionKPIs } from './kpiEngine';
+import { writeFirestoreCloudSnapshot } from './firebaseCloud';
 
 export const apiRouter = Router();
 
@@ -77,6 +78,7 @@ async function syncStateToSharedStorage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    await writeFirestoreCloudSnapshot(state);
   } catch {}
 }
 
@@ -187,6 +189,29 @@ apiRouter.get('/state', (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve database state',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+// Device -> Server state push (self-healing multi-device sync).
+// Any device that notices the server was reset back to seed data re-seeds it
+// with its richer local state so every link stays connected to the same data.
+apiRouter.post('/sync/push', (req: Request, res: Response) => {
+  try {
+    const snapshot = req.body?.snapshot;
+    if (!snapshot || typeof snapshot !== 'object') {
+      return res.status(400).json({ success: false, message: 'Missing snapshot' });
+    }
+    const result = db.mergeCloudSnapshot(snapshot);
+    if (result.restored) {
+      broadcastStateAndKpis('ซิงก์ข้อมูลจากอุปกรณ์เข้าสู่ฐานข้อมูลกลางเรียบร้อยแล้ว');
+    }
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Sync push failed',
       error: error instanceof Error ? error.message : String(error),
     });
   }
