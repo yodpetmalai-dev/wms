@@ -57,29 +57,36 @@ async function broadcastToGlobalRelay(action: string, payload: any) {
   } catch {}
 }
 
-async function syncStateToSharedStorage() {
-  try {
-    const state = db.getState();
-    const body = {
-      name: 'wms_shared_save_c882910e',
-      data: {
-        version: state.version,
-        lastUpdatedMs: state.lastUpdatedMs,
-        savedAtStr: new Date().toLocaleTimeString('th-TH'),
-        requisitions: state.requisitions,
-        pickingOrders: state.pickingOrders,
-        shipments: state.shipments,
-        products: state.products.map((p) => ({ sku: p.sku, currentStock: p.currentStock })),
-        employeeKPIs: state.employeeKPIs,
-      },
-    };
-    await fetch(SHARED_STORAGE_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    await writeFirestoreCloudSnapshot(state);
-  } catch {}
+// Serialize cloud writes so rapid consecutive broadcasts (e.g. Shipped then
+// Delivered) land in ORDER — otherwise two concurrent PATCHes can race and the
+// older state silently overwrites the newer one in Firestore.
+let sharedWriteChain: Promise<unknown> = Promise.resolve();
+
+function syncStateToSharedStorage(): Promise<unknown> {
+  sharedWriteChain = sharedWriteChain
+    .then(() => {
+      const state = db.getState();
+      const body = {
+        name: 'wms_shared_save_c882910e',
+        data: {
+          version: state.version,
+          lastUpdatedMs: state.lastUpdatedMs,
+          savedAtStr: new Date().toLocaleTimeString('th-TH'),
+          requisitions: state.requisitions,
+          pickingOrders: state.pickingOrders,
+          shipments: state.shipments,
+          products: state.products.map((p) => ({ sku: p.sku, currentStock: p.currentStock })),
+          employeeKPIs: state.employeeKPIs,
+        },
+      };
+      return fetch(SHARED_STORAGE_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(() => writeFirestoreCloudSnapshot(state));
+    })
+    .catch(() => {});
+  return sharedWriteChain;
 }
 
 // Broadcast full state & KPI update to all devices
